@@ -7,6 +7,7 @@ package appengine_internal
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -70,6 +71,20 @@ func init() {
 	instanceConfig.AppID = string(c.AppId)
 	instanceConfig.APIHost = c.GetApiHost()
 	instanceConfig.APIPort = int(*c.ApiPort)
+
+	if instanceConfig.APIPort > 65535 {
+		portBytes := make([]byte, 4)
+		binary.LittleEndian.PutUint32(portBytes, uint32(instanceConfig.APIPort))
+		apiPortBytes := []byte{portBytes[0], portBytes[1], 0, 0}
+		instanceConfig.APIPort = int(binary.LittleEndian.Uint32(apiPortBytes))
+
+		externalApiPortBytes := []byte{portBytes[2], portBytes[3], 0, 0}
+		externalApiPort := binary.LittleEndian.Uint32(externalApiPortBytes)
+		externalApiAddress = fmt.Sprintf("http://%s:%d", instanceConfig.APIHost, externalApiPort)
+	} else {
+		externalApiAddress = ""
+	}
+
 	instanceConfig.VersionID = string(c.VersionId)
 	instanceConfig.InstanceID = *c.InstanceId
 	instanceConfig.Datacenter = *c.Datacenter
@@ -112,6 +127,7 @@ func handleFilteredHTTP(w http.ResponseWriter, r *http.Request) {
 
 var (
 	apiAddress    string
+	externalApiAddress string
 	apiHTTPClient = &http.Client{
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
@@ -215,7 +231,14 @@ func call(service, method string, data []byte, requestID string, timeout time.Du
 		return nil, err
 	}
 
-	body, err := postWithTimeout(apiAddress, "application/octet-stream", bytes.NewReader(buf), timeout)
+	var addressToUse string
+	if externalApiAddress != "" && service == "app_identity_service" {
+		addressToUse = externalApiAddress
+	} else {
+		addressToUse = apiAddress
+	}
+
+	body, err := postWithTimeout(addressToUse, "application/octet-stream", bytes.NewReader(buf), timeout)
 	if err != nil {
 		return nil, err
 	}
